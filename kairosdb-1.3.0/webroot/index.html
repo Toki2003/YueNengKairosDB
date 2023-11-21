@@ -1,0 +1,661 @@
+<!--
+	To use Highcharts instead of Flot
+	1) Download highcharts.js and add to the js directory
+	2) Uncomment the include line for highcharts js in index.html and view.html
+-->
+
+<html xmlns="http://www.w3.org/1999/html">
+
+<head profile="http://www.w3.org/2005/10/profile">
+	<link rel="icon"
+		  type="image/png"
+		  href="img/favicon.png"/>
+
+	<link href="css/cupertino/jquery-ui-1.10.0.custom.css" rel="stylesheet">
+	<link href="css/combobox.css" rel="stylesheet">
+	<link href="css/jquery.dropdown.css" rel="stylesheet">
+	<link href="css/date-time-picker.css" rel="stylesheet">
+
+	<link href="css/style.css" rel="stylesheet">
+	<link href="css/header.css" rel="stylesheet">
+
+	<script src="js/jquery.1.9.0.min.js"></script>
+	<script src="js/kairosdb.js"></script>
+	<script src="js/kairosdb-query.js"></script>
+	<script src="js/kairosdb-flot.js"></script>
+	<script src="js/kairosdb-highcharts.js"></script>
+	<script src="js/jquery-ui-1.10.0.custom.min.js"></script>
+	<script src="js/graph.js"></script>
+	<script src="js/jquery.flot.min.js"></script>
+	<script src="js/jquery.flot.time.js"></script>
+	<script src="js/jquery.flot.selection.js"></script>
+	<script src="js/jquery.flot.resize.js"></script>
+	<script src="js/jquery.dropdown.min.js"></script>
+	<script src="js/blob.js"></script>
+	<script src="js/fileSaver.old.js"></script>
+	<script src="js/dataExporter.old.js"></script>
+	<!--<script src="js/highcharts.js"></script>-->
+	<script src="js/combobox.js"></script>
+	<script src="js/numeral.min.js"></script>
+	<script src="js/moment.min.js"></script>
+	<script src="js/moment-timezone-with-data.min.js"></script>
+	<script src="js/moment-strftime.js"></script>
+	<script src="js/date-time-picker.js"></script>
+
+	<script>
+		var metricNames = [];
+
+		$(function () {
+			if (!window.console) {
+				window.console = {
+					log: function () {
+					}
+				};
+			} // If not console, don't log
+
+			var tzSelect = $("#timeZone");
+
+			tzSelect.append('<option value="' + moment.tz.guess() + '">Browser Default - ' + moment.tz.guess() + '</option>');
+			tzSelect.append('<option>UTC</option>');
+			moment.tz.names().forEach(function(tz) {
+				tzSelect.append('<option>' + tz + '</option>');
+			})
+
+			var $startTime = $("#startTime");
+			var $endTime = $("#endTime");
+
+			$("#saveButton").button().button("enable");
+			$("#submitButtonJSON").button().click(exportJsonQueryData);
+			$("#submitButtonCSV").button().click(exportCsvQueryData);
+			$("#submitButton").button().click(updateChart);
+			$("#showQueryButton").button().click(showQuery);
+			$("#deleteButton").button().click(deleteDataPoints).button("disable");
+			$startTime.datetimepicker({
+				showTimezone: false,
+				showTime: false,
+				showMicrosec: false,
+				showMillisec: true,
+				dateFormat: "yy-mm-dd",
+				timeFormat: "HH:mm:ss.l"
+			});
+			$endTime.datetimepicker({
+				showTimezone: false,
+				showTime: false,
+				showMicrosec: false,
+				showMillisec: true,
+				dateFormat: "yy-mm-dd",
+				timeFormat: "HH:mm:ss.l"
+			});
+			$("#resetZoom").hide();
+			$("#errorContainer").hide();
+			$("#metricTemplate").hide();
+			$("#tagTemplate").hide();
+			$("#aggregatorTemplate").hide();
+			$("#groupByTemplate").hide();
+			$("#groupByTagsTemplate").hide();
+			$("#groupByTimeTemplate").hide();
+			$("#groupByValueTemplate").hide();
+			$("#groupByBinTemplate").hide();
+			$(".aggregatorPercentile").hide();
+			$(".divisor").hide();
+			$(".scalingFactor").hide();
+			$(".aggregatorFilter").hide();
+			$(".aggregatorTrim").hide();
+			$(".aggregatorDev").hide();
+			$(".aggregatorSaveAs").hide();
+			$(".aggregatorRate").hide();
+			$("#tabs").tabs({'active': 0});
+
+			$startTime.bind("change paste keyup", function () {
+				// clear relative time if absolute time is set
+				$("#startRelativeValue").val("");
+			});
+
+			$("#startRelativeValue").bind("change paste keyup", function () {
+				// clear absolute time if relative time is set
+				$startTime.val("");
+			});
+
+			$endTime.bind("change paste keyup", function () {
+				// clear relative time if absolute time is set
+				$("#endRelativeValue").val("");
+			});
+
+			$("#endRelativeValue").bind("change paste keyup", function () {
+				// clear absolute time if relative time is set
+				$endTime.val("");
+			});
+
+			addMetric();
+
+			$("#groupByTagDialog").dialog(
+					{
+						resizable: false,
+						autoOpen: false,
+						width: 230,
+						height: 75
+					});
+			$(".ui-dialog-titlebar").hide();
+
+
+			$("#cancelTagNameButton").button({
+				text: false,
+				icons: {
+					primary: 'ui-icon-close'
+				}
+			}).click(function () {
+				$("#groupByTagDialog").dialog("close");
+				$("#autocompleteTagName").val(""); // clear value
+			});
+
+			$("#addTagNameButton").button({text: true});
+
+			$("#addMetricButton").button({
+				text: false,
+				icons: {
+					primary: 'ui-icon-plus'
+				}
+			}).click(addMetric);
+
+			updateMetricNamesArray();
+
+			// Autocomplete for GroupBy dialog
+			$("#autocompleteTagName").combobox().combobox({
+				source: function (request, response) {
+					var selectedTabIndex = $("#tabs").tabs("option", "active");
+				var metricName = $('#metricContainer' + tabContainerMap[selectedTabIndex]).find(".metricName").combobox("value");
+					if (metricName){
+						var tags = [];
+						$.each(metricToTags[metricName], function (tag) {
+							tags.push(tag);
+						});
+						response(tags);
+					}
+				}
+			});
+
+			$(document).on("click", function (e) {
+				// Close the groupBy dialog if it loses focus
+				var clickedOnDialog = $(e.target)
+						.closest(".ui-widget.ui-dialog")
+						.children(".ui-dialog-content")
+						.is(".tagDialog");
+
+				var searchButton = $(e.target).is(".ui-icon-search") || $(e.target).is(".tagSearch");
+
+				if (!clickedOnDialog && !searchButton) {
+					$('.tagDialog').dialog('close');
+				}
+			});
+		});
+	</script>
+
+</head>
+
+<body>
+<div id="page-header">
+<div id="logo"><img src='img/kairosdb.png'></div>
+<a class="active" href="index.html">Query</a>
+<a href="rollups.html">Rollups</a>
+<div id="timezone-header">
+Timezone: <select id="timeZone" class="ui-widget timeZone" style="margin-left: 10px;"></select>
+</div>
+</div>
+
+<div class="header ui-widget">Time Range</div>
+
+<div class="wire-frame" style="margin-top: 5px;">
+	<table style="white-space: nowrap;">
+		<tr>
+		<tr>
+			<td colspan="3" align="center" class="ui-widget header">Absolute</td>
+		<td colspan="2" align="center" class="ui-widget header">Relative</td>
+		</tr>
+		<tr>
+			<td class="ui-widget">From/Start*</td>
+			<td><input id="startTime" class="ui-widget" type="text"
+					   style="width:200px;"/>
+			</td>
+			<td class="ui-widget or">or</td>
+			<td><input id="startRelativeValue" class="ui-widget"
+					   style="width: 30px;" type="text" value="1">
+					   <select id="startRelativeUnit" class="ui-widget">
+					<option value="years">Years</option>
+					<option value="months">Months</option>
+					<option value="weeks">Weeks</option>
+					<option value="days">Days</option>
+					<option value="hours" selected="true">Hours</option>
+					<option value="minutes">Minutes</option>
+					<option value="seconds">Seconds</option>
+				</select>
+			</td>
+			<td class="ui-widget"> ago</td>
+		</tr>
+		<tr>
+			<td class="ui-widget">To/End</td>
+			<td><input id="endTime" class="ui-widget" type="text"
+					   style="width:200px;"/></td>
+			<td class="ui-widget or">or</td>
+			<td><input id="endRelativeValue" class="ui-widget"
+					   style="width: 30px;" type="text">
+				<select id="endRelativeUnit" class="ui-widget">
+					<option value="years">Years</option>
+					<option value="months">Months</option>
+					<option value="weeks">Weeks</option>
+					<option value="days">Days</option>
+					<option value="hours">Hours</option>
+					<option value="minutes">Minutes</option>
+					<option value="seconds">Seconds</option>
+				</select>
+			</td>
+			<td class="ui-widget"> ago</td>
+		</tr>
+	</table>
+</div>
+
+<!--<p>
+	Post Processing Script: <input id="post_script" class="ui_widget" type="text" style="width: 150px;"/>
+</p>-->
+<div style="margin-top: 5px">
+<span class="ui-widget">Metrics</span>
+<button id="addMetricButton"></button>
+</div>
+<div id="tabs" style="width:800px; background:none;margin-top: 5px;">
+	<ul></ul>
+</div>
+
+<div class="ui-widget footnote">* Required Fields</div>
+
+<p/>
+<button id="submitButton" style="margin-top: 10px;">Graph</button>
+<button id="showQueryButton" style="margin-top: 10px;">Show Query</button>
+<button id="saveButton" style="margin-top: 10px;" value="Dropdown"
+		data-dropdown="#saveDropdown">Save
+</button>
+<button id="deleteButton" style="margin-top: 10px;">Delete Data</button>
+<table style="margin-top: 10px; width: 800px" class="ui-widget"><tr>
+	<td><span class="header ui-widget">Query Time: </span><span id="queryTime" class="ui-widget"></span></td>
+	<td><span class="header ui-widget">Sample Size: </span><span id="sampleSize" class="ui-widget"></span></td>
+	<td><span class="header ui-widget">Data Points: </span><span id="numDataPoints" class="ui-widget"></span></td>
+	<td><a id="graph_link" href="" target="_blank" style="display: none">Link to Graph</a></td>
+</tr>
+</table>
+
+<div class="ui-widget">
+	<div id="errorContainer" class="ui-state-error ui-corner-all"
+		 style="padding:5px; width: 500px;">
+	</div>
+</div>
+
+<div class="query-window" style="display: none">
+<span class="header ui-widget">Query in
+	<input class="ui-widget" type="radio" name="query-type" id="query-type-json"
+		   checked onclick="displayQuery()"/><label
+			for="query-type-json">JSON</label> or
+	<input type="radio" name="query-type" id="query-type-js-object"
+		   onclick="displayQuery()"/><label
+			for="query-type-js-object">JS Object</label></span> <br>
+	<input type="hidden" id="query-hidden-text"/>
+	<textarea id="query-text" class="ui-widget" rows="5"
+			  style="margin-top: 5px;"></textarea>
+</div>
+
+<span id="status" class="ui-widget"></span>
+
+<table style="width: 100%;">
+
+	<tr>
+		<td>
+			<div id="flotTitle" class="graphSubtitle"></div>
+		</td>
+		<td></td>
+	</tr>
+	<tr>
+		<td style="width: 100%;">
+			<div id="chartContainer"></div>
+		</td>
+	</tr>
+	<tr>
+		<td align="right">
+			<div id="graphLegend"></div>
+		</td>
+	</tr>
+</table>
+
+<button id="resetZoom" class=ui-widget>Reset Zoom</button>
+
+<div id="container"></div>
+
+<!-- Hidden Metric div used for cloning -->
+<div id="metricTemplate">
+	<table class="ui-widget metricNameTable">
+		<tr>
+			<td class="ui-widget">Name*</td>
+			<td><input class="ui-widget metricName" style="width: 500px"></td>
+			<td>
+				<button class="ui-widget refresh-metric-names"
+						title="Update metric names"
+						style="height: 20px;"></button>
+			</td>
+		</tr>
+	</table>
+
+	<p></p>
+	<span class="header ui-widget">Limit</span>
+	<input class="ui-widget" type="text" name="limit" value=""
+		   style="margin-left: 5px; height:18px;" size="10"/>
+
+	<p></p>
+	<span class="header ui-widget">Group By</span>
+	<button id="addGroupByButton"></button>
+
+	<div id="groupByContainer"></div>
+
+	<p></p>
+	<span class="header ui-widget">Aggregators</span>
+	<button id="addAggregatorButton"></button>
+
+	<div id="aggregatorContainer"></div>
+
+	<p></p>
+	<span class="header ui-widget">Tags</span>
+	<button id="tagButton"></button>
+
+	<div id="tagsContainer" style="margin-bottom: 5px;"></div>
+
+	<div class="checkbox" style="display:table">
+		<div style="display: table-row">
+			<div style="display: table-cell;"><input class="scale"
+													 type="checkbox"/></div>
+			<div style="display: table-cell; vertical-align: middle">Scale and
+				add Y-axis
+			</div>
+		</div>
+	</div>
+</div>
+
+<!-- Hidden Tag div used for cloning -->
+<div id="tagTemplate" style="margin-top: 10px;">
+	<div name="tags" id="tagContainer" class="component-frame"
+		 style="margin-bottom: 5px; margin-left: 15px;">
+		<button class="removeTag"
+				style="background:none; border: none; width:5px; float:right; margin-right: 5px; margin-top: 0;"></button>
+		<span class="ui-widget">Name</span>
+		<span><input id="tagName" name="tagName" class="ui-widget" type="text"
+					 style="margin-left: 4px;"/></span>
+		<span class="ui-widget" style="margin-left: 4px;">Value</span>
+		<span><input id="tagValue" name="tagValue" class="ui-widget" type="text"
+					 style="margin-left: 4px; margin-bottom: 5px;"/></span>
+	</div>
+</div>
+
+<!-- Hidden GroupBy div used for cloning -->
+<div id="groupByTemplate" class="component-frame groupBy"
+	 style="margin-left: 15px; margin-top: 3px; margin-bottom: 5px; display: table;">
+	<button class="removeGroupBy"
+			style="background:none; border: none; width:5px; float:right; margin-right: 5px; margin-top: 0;"></button>
+	<div style="display: table-row">
+		<div style="display: table-cell">
+			<select class="ui-widget groupByName">
+				<option value="tags">Tags</option>
+				<option value="time">Time</option>
+				<option value="value">Value</option>
+				<option value="bin">Bin</option>
+			</select>
+		</div>
+		<div class="groupByContent"></div>
+	</div>
+</div>
+
+<!-- Hidden GroupBy div used for cloning -->
+<div id="groupByTagsTemplate">
+	<div style="display: table-cell">
+		<span class="header" style="margin-left: 30px; vertical-align: top;">Tags</span>
+	</div>
+	<div style="display: table-cell">
+		<input class="ui-widget groupByTagsValue"
+			   style="width: 250px; margin-left: 10px;" type="text">
+		<br>
+		<span class="ui-widget" style="font-size: xx-small;margin-left: 10px;">*Comma or space separated list</span>
+	</div>
+	<div style="display: table-cell;">
+		<button class="tagSearch"></button>
+	</div>
+</div>
+
+<!-- Hidden GroupBy div used for cloning -->
+<div id="groupByTimeTemplate">
+	<div style="display: table-cell">
+		<span class="header" style="margin-left: 30px; vertical-align: top;">Target Size</span>
+	</div>
+
+	<div style="display: table-cell">
+		<input class="ui-widget groupByTimeSizeValue"
+			   style="width: 30px; margin-left: 10px;" type="text"
+			   value="1">
+	</div>
+	<div style="display: table-cell;">
+		<select class="ui-widget groupByTimeUnit" style="margin-left: 10px;">
+			<option value="years">Years</option>
+			<option value="months">Months</option>
+			<option value="weeks">Weeks</option>
+			<option value="days">Days</option>
+			<option value="hours">Hours</option>
+			<option value="minutes">Minutes</option>
+			<option value="seconds">Seconds</option>
+			<option value="milliseconds" selected="selected">Milliseconds
+			</option>
+		</select>
+	</div>
+
+	<div style="display: table-cell">
+		<span class="header" style="margin-left: 30px; vertical-align: top;">Count</span>
+	</div>
+	<div style="display: table-cell">
+		<input class="ui-widget groupByTimeCount"
+			   style="width: 30px; margin-left: 10px;" type="text">
+	</div>
+</div>
+
+<!-- Hidden GroupBy div used for cloning -->
+<div id="groupByValueTemplate">
+	<div style="display: table-cell">
+		<span class="header" style="margin-left: 30px; vertical-align: top;">Target Size</span>
+	</div>
+	<div style="display: table-cell">
+		<input class="ui-widget groupByValueValue"
+			   style="width: 40px; margin-left: 10px;" type="text">
+	</div>
+</div>
+
+<!-- Hidden GroupBy div used for cloning -->
+<div id="groupByBinTemplate">
+	<div style="display: table-cell">
+		<span class="header" style="margin-left: 30px; vertical-align: top;">Bin Values</span>
+	</div>
+	<div style="display: table-cell">
+		<input class="ui-widget groupByBinValue"
+			   style="width: 100%; margin-left: 10px;" type="text">
+		<br>
+		<span class="ui-widget" style="font-size: xx-small;margin-left: 10px;">*Comma separated list</span>
+	</div>
+</div>
+
+<!-- Hidden GroupBy Dialog. Used for auto-completion of tag name -->
+<div id="groupByTagDialog" class="tagDialog" style="overflow:visible">
+	<button id="cancelTagNameButton" class="ui-widget"
+			style="background:none; border: none; width:5px; float:right; margin-right: 5px; margin-top: 0;"></button>
+	<span class="ui-widget header">Search for tag name.</span>
+	<br>
+
+	<input id="autocompleteTagName" class="ui-widget" style="width: 120px;"
+		   type="text">
+	<button id="addTagNameButton">Add</button>
+</div>
+
+<!-- Hidden Aggregator div used for cloning -->
+<div id="aggregatorTemplate" class="component-frame aggregator"
+	 style="margin-left: 15px; margin-top: 3px; display: table;">
+	<button class="removeAggregator"
+			style="background:none; border: none; width:5px; float:right; margin-right: 5px; margin-top: 0;"></button>
+
+	<div style="">
+		<div style="float: left">
+			<select class="ui-widget aggregatorName">
+				<option value="avg">AVG</option>
+				<option value="count">COUNT</option>
+				<option value="dev">DEV</option>
+				<option value="diff">DIFF</option>
+				<option value="div">DIV</option>
+				<option value="filter">FILTER</option>
+				<option value="first">FIRST</option>
+				<option value="gaps">GAPS</option>
+				<option value="last">LAST</option>
+				<option value="least_squares">LEAST SQUARES</option>
+				<option value="max">MAX</option>
+				<option value="min">MIN</option>
+				<option value="percentile">PERCENTILE</option>
+				<option value="rate">RATE</option>
+				<option value="sampler">SAMPLER</option>
+				<option value="save_as">SAVE AS</option>
+				<option value="scale">SCALE</option>
+				<option value="sum" selected="selected">SUM</option>
+				<option value="trim">TRIM</option>
+
+			</select>
+		</div>
+		<div>
+			<div style="float: left" class="aggregatorSampling">
+				<div style="float: left">
+					<span class="header"
+						  style="margin-left: 10px; vertical-align: top;">Sampling</span>
+				</div>
+				<div style="float: left">
+					<input class="ui-widget aggregatorSamplingValue"
+						   style="width: 30px; margin-left: 10px;" type="text"
+						   value="1"/>
+				</div>
+				<div style="float: left">
+					<select class="ui-widget aggregatorSamplingUnit"
+							style="margin-left: 10px;">
+						<option value="years">Years</option>
+						<option value="months">Months</option>
+						<option value="weeks">Weeks</option>
+						<option value="days">Days</option>
+						<option value="hours">Hours</option>
+						<option value="minutes">Minutes</option>
+						<option value="seconds">Seconds</option>
+						<option value="milliseconds" selected="selected">
+							Milliseconds
+						</option>
+					</select>
+				</div>
+				<div style="float: left">
+					<span class="header"
+						  style="margin-left: 10px; vertical-align: top;">Align:</span>
+				</div>
+				<div style="float: left">
+					<select class="ui-widget aggregatorAlign" default="none"
+							style="margin-left: 10px;">
+						<option value="none">None</option>
+						<option value="start">Start Time</option>
+						<option value="end">End Time</option>
+					</select>
+				</div>
+			</div>
+			<div style="display: table-cell" class="aggregatorPercentile">
+				<span class="header"
+					  style="margin-left: 10px; vertical-align: top;">Percentile</span>
+			</div>
+			<div style="display: table-cell" class="aggregatorPercentile">
+				<input class="ui-widget aggregatorPercentileValue"
+					   style="width: 40px; margin-left: 10px;" type="text"
+					   value="0.75"/>
+			</div>
+			<div style="display: table-cell" class="divisor">
+				<span class="header"
+					  style="margin-left: 10px; vertical-align: top;">Divisor</span>
+				<input class="ui-widget divisorValue"
+					   style="width: 60px; margin-left: 10px;" type="text"/>
+			</div>
+			<div style="display: table-cell" class="scalingFactor">
+				<span class="header"
+					  style="margin-left: 10px; vertical-align: top;">Factor</span>
+				<input class="ui-widget scalingFactorValue"
+					   style="width: 60px; margin-left: 10px;" type="text"
+					   value="1.0"/>
+			</div>
+		</div>
+
+		<div style="float: left" class="aggregatorRate">
+			<select class="ui-widget rateUnit" style="margin-left: 10px;">
+				<option value="years">Years</option>
+				<option value="months">Months</option>
+				<option value="weeks">Weeks</option>
+				<option value="days">Days</option>
+				<option value="hours">Hours</option>
+				<option value="minutes">Minutes</option>
+				<option value="seconds">Seconds</option>
+				<option value="milliseconds" selected="selected">Milliseconds
+				</option>
+			</select>
+		</div>
+
+		<div style="float: left" class="aggregatorFilter">
+			<span class="header"
+				style="margin-left: 10px; vertical-align: top;">Filter Operation</span>
+			<select class="ui-widget aggregatorFilterOpValue"
+					style="margin-left: 10px;">
+				<option value="equal" selected="selected">EQUAL</option>
+				<option value="ne">NOT EQUAL</option>
+				<option value="lt">LT</option>
+				<option value="lte">LTE</option>
+				<option value="gt">GT</option>
+				<option value="gte">GTE</option>
+			</select>
+
+			<span class="header"
+				style="margin-left: 10px; vertical-align: top;">Threshold</span>
+			<input class="ui-widget aggregatorFilterThresholdValue"
+				style="width: 60px; margin-left: 10px;" type="text"/>
+		</div>
+
+		<div style="float: left" class="aggregatorTrim">
+			<span class="header"
+				  style="margin-left: 10px; vertical-align: top;">Trim</span>
+			<select class="ui-widget aggregatorTrimValue"
+					style="margin-left: 10px;">
+				<option value="first" selected="selected">First</option>
+				<option value="last">Last</option>
+				<option value="both">Both</option>
+			</select>
+		</div>
+		<div style="float: left" class="aggregatorDev">
+			<span class="header"
+				  style="margin-left: 10px; vertical-align: top;">Dev Value</span>
+			<select class="ui-widget aggregatorDevValue"
+					style="margin-left: 10px;">
+				<option value="value" selected="selected">Value</option>
+				<option value="pos_sd">+SD</option>
+				<option value="neg_sd">-SD</option>
+			</select>
+		</div>
+		<div style="float: left" class="aggregatorSaveAs">
+			<span class="header"
+				  style="margin-left: 10px; vertical-align: top;">Save As</span>
+			<input class="ui-widget aggregatorSaveAsValue"
+				   style="width: 275px; margin-left: 10px;" type="text"/>
+		</div>
+		<div style="clear: both"></div>
+	</div>
+</div>
+
+<div id="saveDropdown" class="dropdown dropdown-tip">
+	<div class="dropdown-panel">
+		<button id="submitButtonCSV" style="margin-top: 10px;">CSV</button>
+		<button id="submitButtonJSON" style="margin-top: 10px;">JSON</button>
+	</div>
+</div>
+
+</body>
+</html>
